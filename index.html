@@ -74,17 +74,25 @@
   <script type="importmap">
 {
   "imports": {
-    "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
-    "react-markdown": "https://esm.sh/react-markdown@^10.1.0",
+    "lucide-react": "https://esm.sh/lucide-react@0.344.0",
+    "react-markdown": "https://esm.sh/react-markdown@9.0.1",
     "@google/genai": "https://esm.sh/@google/genai@^1.33.0",
-    "react/": "https://esm.sh/react@18.3.1/",
     "react": "https://esm.sh/react@18.3.1",
-    "react-dom/": "https://esm.sh/react-dom@18.3.1/"
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "three": "https://esm.sh/three@0.160.0",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.16.0?external=react,react-dom,three",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@9.100.0?external=react,react-dom,three,@react-three/fiber",
+    "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.0?external=react,react-dom,three,@react-three/fiber",
+    "postprocessing": "https://esm.sh/postprocessing@6.35.0?external=three",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
   }
 }
 </script>
 </head>
   <body class="bg-k-bg text-slate-800 h-[100dvh] overflow-hidden selection:bg-k-primary selection:text-white">
     <div id="root" class="h-full"></div>
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>
