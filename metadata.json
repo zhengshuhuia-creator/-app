@@ -1,0 +1,7 @@
+{
+  "name": "K-Completer",
+  "description": "A Korean language companion that corrects your mixed Korean-Chinese sentences into natural, native-sounding Korean.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
