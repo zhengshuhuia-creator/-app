@@ -1,9 +1,6 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Mic } from 'lucide-react';
 import { Message } from '../../types';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { EffectComposer, Bloom } from '@react-three/postprocessing';
-import * as THREE from 'three';
 
 interface ViewProps {
   messages: Message[];
@@ -11,137 +8,182 @@ interface ViewProps {
   onSend: (text: string, audioBlob?: Blob) => void;
 }
 
-// --- 3D PARTICLE SYSTEM COMPONENT ---
-const HeartParticles = ({ visualState, analyzer }: { visualState: string, analyzer: React.MutableRefObject<AnalyserNode | null> }) => {
-  const pointsRef = useRef<THREE.Points>(null);
-  
-  // Generate Heart Shape Points
-  const particlesPosition = useMemo(() => {
-    const count = 3000;
-    const positions = new Float32Array(count * 3);
-    
-    for (let i = 0; i < count; i++) {
-      const t = Math.random() * Math.PI * 2;
-      // Heart Equation
-      // x = 16sin^3(t)
-      // y = 13cos(t) - 5cos(2t) - 2cos(3t) - cos(4t)
-      
-      // Add randomness to fill volume
-      const r = Math.pow(Math.random(), 0.3); // Bias towards outer edge slightly
-      
-      let x = 16 * Math.pow(Math.sin(t), 3);
-      let y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
-      
-      // Randomize Z for 3D depth
-      const z = (Math.random() - 0.5) * 4; 
+// Configuration
+const BACKGROUND_COLOR = '#020410'; // Deep Midnight Void
+const PARTICLE_COUNT = 1500; // Increased density for "Solid" look
+const HEART_SCALE_BASE = 11; // Size
 
-      // Scale down and add noise
-      const scale = 0.15;
-      positions[i * 3] = (x * scale) * r + (Math.random() - 0.5) * 0.1;
-      positions[i * 3 + 1] = (y * scale) * r + (Math.random() - 0.5) * 0.1;
-      positions[i * 3 + 2] = z * r;
+// Galaxy Blue Palette (Ice & Stardust)
+// We use a mix of colors to create depth
+const PALETTE = [
+    { r: 255, g: 255, b: 255, a: 0.9 }, // Pure White (Sparkles) - 20%
+    { r: 165, g: 243, b: 252, a: 0.6 }, // Cyan 200 (Glow) - 40%
+    { r: 59, g: 130, b: 246, a: 0.4 },  // Blue 500 (Body) - 30%
+    { r: 30, g: 58, b: 138, a: 0.3 },   // Blue 900 (Depth) - 10%
+];
+
+class HeartParticle {
+    x: number = 0;
+    y: number = 0;
+    
+    // Target position (Heart shape)
+    originX: number;
+    originY: number;
+    
+    // Dynamics
+    color: string;
+    size: number;
+    jitterPhase: number;
+    baseAlpha: number;
+
+    constructor(canvasWidth: number, canvasHeight: number) {
+        // 1. Generate a point on/in the heart
+        const t = Math.random() * Math.PI * 2;
+        
+        // Parametric Heart Equation
+        // x = 16 sin^3(t)
+        // y = -(13 cos(t) - 5 cos(2t) - 2 cos(3t) - cos(4t))
+        let hx = 16 * Math.pow(Math.sin(t), 3);
+        let hy = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+        
+        // Add "Stardust" spread (Volume)
+        // Concentrate more points near the shell (r ~ 1.0) for definition, 
+        // but fill the inside (r < 1.0) for density.
+        // The image shows a very solid shape with fuzzy edges.
+        let r = Math.random();
+        // Use sqrt to distribute area evenly, but bias slightly outwards for sharp edge
+        r = Math.pow(r, 0.3) * 1.2; 
+        
+        this.originX = hx * HEART_SCALE_BASE * r;
+        this.originY = hy * HEART_SCALE_BASE * r;
+
+        // Add some random scatter dust outside
+        if (Math.random() < 0.1) {
+             this.originX *= 1.2;
+             this.originY *= 1.2;
+        }
+
+        // Start at center
+        this.x = 0;
+        this.y = 0;
+
+        // Color Assignment based on "Brightness" (random mix)
+        const rand = Math.random();
+        let colorConfig;
+        if (rand > 0.8) colorConfig = PALETTE[0]; // White sparkles
+        else if (rand > 0.4) colorConfig = PALETTE[1]; // Cyan glow
+        else if (rand > 0.15) colorConfig = PALETTE[2]; // Blue body
+        else colorConfig = PALETTE[3]; // Deep blue
+
+        // Edge brightening: Particles further out are brighter (Rim light)
+        const dist = Math.sqrt(hx*hx + hy*hy);
+        if (dist > 15 && Math.random() > 0.5) {
+            colorConfig = PALETTE[0]; // Make edges white
+        }
+
+        this.baseAlpha = colorConfig.a;
+        this.color = `rgba(${colorConfig.r}, ${colorConfig.g}, ${colorConfig.b}`; // Alpha added in draw
+        
+        // Tiny particles for high-res look
+        this.size = Math.random() * 1.5 + 0.3; 
+        this.jitterPhase = Math.random() * Math.PI * 2;
     }
-    return positions;
-  }, []);
 
-  const dataArray = useRef(new Uint8Array(64));
+    update(
+        centerX: number, 
+        centerY: number, 
+        scaleFactor: number, 
+        audioLevel: number, 
+        time: number
+    ) {
+        // Calculate Target
+        const targetX = centerX + this.originX * scaleFactor;
+        const targetY = centerY + this.originY * scaleFactor;
 
-  useFrame((state) => {
-    if (!pointsRef.current) return;
+        // Audio Jitter (Shimmering effect)
+        // High frequency vibration for "electric" feel
+        const jitter = audioLevel * 8; 
+        const jx = Math.sin(time * 0.5 + this.jitterPhase) * jitter;
+        const jy = Math.cos(time * 0.5 + this.jitterPhase) * jitter;
 
-    const time = state.clock.getElapsedTime();
-    let volume = 0;
-
-    // Audio Analysis
-    if (visualState === 'listening' && analyzer.current) {
-        analyzer.current.getByteFrequencyData(dataArray.current);
-        const avg = dataArray.current.reduce((a, b) => a + b) / dataArray.current.length;
-        volume = avg / 255.0; // 0 to 1
-    } else if (visualState === 'speaking') {
-        // Simulated volume for TTS
-        volume = (Math.sin(time * 15) * 0.5 + 0.5) * 0.5;
-    } else if (visualState === 'thinking') {
-        volume = 0.1 + Math.sin(time * 10) * 0.1;
+        // Smooth Movement (Lerp) - Snappier than before
+        this.x += (targetX + jx - this.x) * 0.15;
+        this.y += (targetY + jy - this.y) * 0.15;
     }
 
-    // Heartbeat Animation
-    const beat = Math.sin(time * 2.5) * 0.1 + 1; // 0.9 to 1.1 base pulse
-    const audioScale = 1 + volume * 0.8; // Expands on volume
-    
-    const targetScale = beat * audioScale;
-    
-    // Smooth Lerp
-    pointsRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.1);
-    
-    // Rotate slowly
-    pointsRef.current.rotation.y += 0.002;
-    pointsRef.current.rotation.z = Math.sin(time * 0.5) * 0.05;
-
-    // Color Pulse (via Opacity or Color prop if using shader, here simplistic size/color)
-    const material = pointsRef.current.material as THREE.PointsMaterial;
-    if (visualState === 'listening') {
-        material.color.setHSL(0.6, 1, 0.5 + volume * 0.5); // Blue glow
-    } else if (visualState === 'speaking') {
-        material.color.setHSL(0.85, 1, 0.5 + volume * 0.5); // Pink/Purple glow
-    } else {
-        material.color.setHSL(0.6, 0.8, 0.5); // Dim Blue
+    draw(ctx: CanvasRenderingContext2D, globalAlphaMod: number) {
+        // Dynamic Alpha for twinkling effect
+        const twinkle = 0.8 + Math.sin(this.jitterPhase) * 0.2; 
+        ctx.fillStyle = `${this.color}, ${this.baseAlpha * globalAlphaMod * twinkle})`;
+        
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
     }
-  });
-
-  return (
-    <points ref={pointsRef}>
-      <bufferGeometry>
-        <bufferAttribute
-          attach="attributes-position"
-          count={particlesPosition.length / 3}
-          array={particlesPosition}
-          itemSize={3}
-        />
-      </bufferGeometry>
-      <pointsMaterial
-        size={0.06}
-        color="#6366f1"
-        transparent
-        opacity={0.8}
-        sizeAttenuation
-        blending={THREE.AdditiveBlending}
-      />
-    </points>
-  );
-};
-
+}
 
 const VoiceView: React.FC<ViewProps> = ({ messages, isLoading, onSend }) => {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
     const [visualState, setVisualState] = useState<'idle' | 'listening' | 'speaking' | 'thinking'>('idle');
     const [lastBotMessageId, setLastBotMessageId] = useState<string | null>(null);
     
-    // Audio Refs
+    // Audio Logic
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
     const analyserRef = useRef<AnalyserNode | null>(null);
-    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
+    const smoothVolumeRef = useRef<number>(0);
+    
+    // Animation Logic
+    const particlesRef = useRef<HeartParticle[]>([]);
+    const animationFrameRef = useRef<number>(0);
+    const timeRef = useRef<number>(0);
+    const dataArrayRef = useRef<Uint8Array | null>(null);
 
-    // --- TTS Logic ---
+    // Initialize Particles
+    useEffect(() => {
+        if (canvasRef.current) {
+            const { width, height } = canvasRef.current.getBoundingClientRect();
+            particlesRef.current = Array.from({ length: PARTICLE_COUNT }, () => new HeartParticle(width, height));
+        }
+
+        return () => {
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+            if (window.speechSynthesis) window.speechSynthesis.cancel();
+        };
+    }, []);
+
+    // Monitor Chat for TTS
     useEffect(() => {
         const lastMsg = messages[messages.length - 1];
         if (lastMsg && lastMsg.role === 'model' && lastMsg.id !== lastBotMessageId && lastMsg.id !== 'welcome') {
             setLastBotMessageId(lastMsg.id);
-            setVisualState('speaking'); // Trigger visual state
             playTTS(lastMsg.content);
         }
     }, [messages, lastBotMessageId]);
+
+    // Monitor Loading State
+    useEffect(() => {
+        if (isLoading) {
+            setVisualState('thinking');
+        } else if (visualState === 'thinking') {
+            setVisualState('idle'); 
+        }
+    }, [isLoading]);
 
     const playTTS = (text: string) => {
         const cleanText = text.replace(/\*\*/g, '').replace(/---SEP---/g, ' ').split('---SEP---')[0]; 
         const u = new SpeechSynthesisUtterance(cleanText);
         u.lang = 'ko-KR';
         u.rate = 0.9;
+        
+        u.onstart = () => setVisualState('speaking');
         u.onend = () => setVisualState('idle');
+        
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(u);
     };
 
-    // --- Audio Recording ---
     const startRecording = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -150,11 +192,10 @@ const VoiceView: React.FC<ViewProps> = ({ messages, isLoading, onSend }) => {
             audioContextRef.current = audioCtx;
             const analyser = audioCtx.createAnalyser();
             analyser.fftSize = 64; 
-            analyser.smoothingTimeConstant = 0.8;
-            
             const source = audioCtx.createMediaStreamSource(stream);
             source.connect(analyser);
             analyserRef.current = analyser;
+            dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
 
             const mediaRecorder = new MediaRecorder(stream);
             mediaRecorderRef.current = mediaRecorder;
@@ -166,13 +207,12 @@ const VoiceView: React.FC<ViewProps> = ({ messages, isLoading, onSend }) => {
 
             mediaRecorder.onstop = () => {
                 const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-                setVisualState('thinking');
                 onSend('', audioBlob); 
                 
-                // Keep context alive for a moment or close it? 
-                // We often close it to stop the mic indicator, but keeping it for 'thinking' viz is nice.
-                // For now, let's close it when not needed.
-                // setTimeout(() => audioCtx.close(), 100);
+                if (audioContextRef.current) {
+                    audioContextRef.current.close();
+                    audioContextRef.current = null;
+                }
             };
 
             mediaRecorder.start();
@@ -189,71 +229,151 @@ const VoiceView: React.FC<ViewProps> = ({ messages, isLoading, onSend }) => {
         }
     };
 
-    return (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-between pb-safe pt-safe overflow-hidden animate-in fade-in duration-500 bg-black">
+    // Render Loop
+    useEffect(() => {
+        const render = () => {
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            // Get Canvas Size dynamically
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+
+            // 1. Clear with Trail effect? No, clean clear for crisp particles
+            ctx.clearRect(0, 0, width, height);
+
+            // 2. Audio Processing
+            let audioFactor = 0;
+            if (visualState === 'listening' && analyserRef.current && dataArrayRef.current) {
+                analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+                let sum = 0;
+                for (let i = 0; i < dataArrayRef.current.length; i++) {
+                    sum += dataArrayRef.current[i];
+                }
+                const instantVolume = sum / dataArrayRef.current.length / 255;
+                smoothVolumeRef.current += (instantVolume - smoothVolumeRef.current) * 0.2;
+                audioFactor = smoothVolumeRef.current;
+            } else if (visualState === 'speaking') {
+                smoothVolumeRef.current = (Math.sin(timeRef.current * 0.2) + 1) * 0.25; 
+                audioFactor = smoothVolumeRef.current;
+            } else {
+                smoothVolumeRef.current *= 0.9;
+                audioFactor = smoothVolumeRef.current;
+            }
+
+            timeRef.current += 1;
+
+            // 3. Heartbeat Dynamics
+            const beatCycle = timeRef.current % 90; // Slower, deeper heartbeat
+            let beatScale = 1.0;
             
-            {/* 3D Visualizer Layer */}
-            <div className="absolute inset-0">
-                <Canvas camera={{ position: [0, 0, 4], fov: 60 }}>
-                    <color attach="background" args={['#050510']} />
-                    <ambientLight intensity={0.5} />
-                    
-                    <HeartParticles visualState={visualState} analyzer={analyserRef} />
-                    
-                    <EffectComposer>
-                        <Bloom luminanceThreshold={0.2} luminanceSmoothing={0.9} height={300} intensity={1.5} />
-                    </EffectComposer>
-                </Canvas>
+            if (visualState === 'idle' || visualState === 'listening') {
+                // Classic "Lub-Dub"
+                if (beatCycle < 10) {
+                    beatScale = 1.0 + Math.sin((beatCycle / 10) * Math.PI) * 0.08;
+                } else if (beatCycle > 12 && beatCycle < 20) {
+                    beatScale = 1.0 + Math.sin(((beatCycle - 12) / 8) * Math.PI) * 0.04;
+                }
+            } else if (visualState === 'speaking') {
+                beatScale = 1.0 + audioFactor * 0.6;
+            } else if (visualState === 'thinking') {
+                beatScale = 1.0 + Math.sin(timeRef.current * 0.3) * 0.05; // Gentle breathing
+            }
+
+            if (visualState === 'listening') {
+                beatScale += audioFactor * 0.4;
+            }
+
+            // 4. Draw Particles
+            // Use 'lighter' to make overlapping particles glow intensely white
+            ctx.globalCompositeOperation = 'lighter';
+            
+            const centerX = width / 2;
+            const centerY = height / 2 - 40;
+
+            particlesRef.current.forEach(p => {
+                p.update(centerX, centerY, beatScale, audioFactor, timeRef.current);
+                p.draw(ctx, 1.0);
+            });
+
+            ctx.globalCompositeOperation = 'source-over';
+
+            animationFrameRef.current = requestAnimationFrame(render);
+        };
+
+        render();
+    }, [visualState]);
+
+    return (
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-between pb-safe pt-safe overflow-hidden animate-in fade-in duration-500" style={{ backgroundColor: BACKGROUND_COLOR }}>
+            
+            {/* Ambient Blue Glow Background */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300px] h-[300px] bg-blue-500/10 blur-[100px] rounded-full pointer-events-none"></div>
+
+            {/* Canvas Layer */}
+            <canvas 
+                ref={canvasRef} 
+                className="absolute inset-0 w-full h-full pointer-events-none"
+                style={{ width: '100%', height: '100%' }}
+            />
+
+            {/* Top Hint Text */}
+            <div className="relative z-50 mt-16 flex flex-col items-center gap-2 mix-blend-screen opacity-80">
+                 <div className={`px-4 py-1.5 rounded-full border backdrop-blur-md transition-all duration-500 ${
+                     visualState === 'listening' ? 'bg-blue-900/40 border-blue-500/50 text-blue-100 shadow-[0_0_20px_rgba(59,130,246,0.4)]' :
+                     visualState === 'speaking' ? 'bg-white/10 border-white/30 text-white shadow-[0_0_20px_rgba(255,255,255,0.2)]' :
+                     'bg-white/5 border-white/10 text-white/50'
+                 }`}>
+                     <span className="text-[10px] font-bold tracking-[0.2em] uppercase flex items-center gap-2">
+                        {visualState === 'listening' && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />}
+                        {visualState === 'speaking' && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+                        {visualState === 'idle' && 'Tap mic to start'}
+                        {visualState === 'listening' && 'Listening'}
+                        {visualState === 'thinking' && 'Thinking'}
+                        {visualState === 'speaking' && 'Speaking'}
+                     </span>
+                 </div>
             </div>
 
-            {/* Subtitles Area (Top/Middle Overlay) */}
-            <div className="relative z-50 w-full px-8 mt-20 min-h-[100px] flex justify-center pointer-events-none">
-                 {(visualState === 'speaking' || visualState === 'thinking') && lastBotMessageId && (
-                     <div className="bg-black/30 backdrop-blur-md px-6 py-4 rounded-2xl border border-white/10 animate-in slide-in-from-top-4 fade-in duration-500 max-w-sm">
-                        <p className="text-blue-50 text-center text-lg font-medium leading-relaxed drop-shadow-md">
+            {/* Subtitles */}
+            <div className="relative z-40 w-full px-8 mb-8 min-h-[100px] flex items-end justify-center pointer-events-none">
+                 {visualState === 'speaking' && lastBotMessageId && (
+                     <div className="bg-white/5 backdrop-blur-xl p-6 rounded-3xl border border-white/10 shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-xs">
+                        <p className="text-blue-50 text-center text-lg font-medium leading-relaxed drop-shadow-[0_0_10px_rgba(0,0,0,0.5)]">
                             {messages[messages.length - 1].content.split('---SEP---')[0]}
                         </p>
                      </div>
                  )}
             </div>
 
-            {/* Status Indicator */}
-            <div className="relative z-50 mb-8">
-                 <div className={`px-5 py-2 rounded-full border backdrop-blur-md transition-all duration-500 flex items-center gap-3 ${
-                     visualState === 'listening' ? 'bg-blue-900/60 border-blue-500 text-blue-100 shadow-[0_0_20px_rgba(59,130,246,0.5)]' :
-                     visualState === 'speaking' ? 'bg-purple-900/40 border-purple-400 text-purple-100 shadow-[0_0_20px_rgba(192,132,252,0.4)]' :
-                     'bg-white/5 border-white/10 text-white/50'
-                 }`}>
-                     <div className={`w-2 h-2 rounded-full ${visualState === 'listening' ? 'bg-green-400 animate-pulse' : 'bg-slate-400'}`} />
-                     <span className="text-sm font-bold tracking-widest uppercase">
-                        {visualState === 'idle' && 'Tap mic to start'}
-                        {visualState === 'listening' && 'Listening...'}
-                        {visualState === 'thinking' && 'Processing...'}
-                        {visualState === 'speaking' && 'Speaking...'}
-                     </span>
-                 </div>
-            </div>
-
-            {/* Interaction Controls */}
+            {/* Controls */}
             <div className="relative z-50 mb-16">
                 {visualState === 'listening' ? (
                     <button 
                         onClick={stopRecording}
-                        className="w-24 h-24 rounded-full bg-red-500/20 border-2 border-red-500 text-red-100 flex items-center justify-center animate-pulse hover:bg-red-500 hover:text-white transition-all scale-100 hover:scale-110 active:scale-95"
+                        className="group w-20 h-20 rounded-full bg-gradient-to-tr from-blue-600 to-cyan-400 p-[2px] shadow-[0_0_40px_rgba(59,130,246,0.6)] hover:scale-105 transition-all duration-300"
                     >
-                         <div className="w-8 h-8 rounded bg-current shadow-[0_0_15px_rgba(239,68,68,0.8)]" />
+                        <div className="w-full h-full rounded-full bg-[#020410] flex items-center justify-center">
+                             <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-500 to-cyan-500 animate-pulse group-hover:bg-red-500 transition-colors"></div>
+                        </div>
                     </button>
                 ) : (
                     <button 
                         onClick={startRecording}
                         disabled={isLoading || visualState === 'speaking'}
-                        className={`w-24 h-24 rounded-full flex items-center justify-center text-white transition-all duration-300 border border-white/10 backdrop-blur-md group ${
-                            isLoading 
-                            ? 'bg-white/5 opacity-50 animate-pulse cursor-wait' 
-                            : 'bg-white/10 hover:bg-blue-600 hover:border-transparent hover:shadow-[0_0_40px_rgba(37,99,235,0.6)] active:scale-95'
+                        className={`w-20 h-20 rounded-full flex items-center justify-center text-white transition-all duration-500 border border-white/10 backdrop-blur-md ${
+                            isLoading || visualState === 'speaking'
+                            ? 'bg-white/5 opacity-30 cursor-not-allowed' 
+                            : 'bg-white/5 hover:bg-blue-500/20 hover:border-blue-500/50 hover:scale-105 shadow-[0_0_30px_rgba(59,130,246,0.15)]'
                         }`}
                     >
-                        <Mic size={40} className="group-hover:scale-110 transition-transform" />
+                        <Mic size={28} className="text-blue-100 opacity-90 group-hover:opacity-100" />
                     </button>
                 )}
             </div>
